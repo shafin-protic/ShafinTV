@@ -542,8 +542,11 @@
         groups: {},
         playlists: [],
         groupNames: [],
-        currentPlaylist: null,
-        currentVideoIndex: -1,
+        // Playback state
+        playingPlaylist: null,      // The playlist currently playing (auto-play uses this)
+        playingVideoIndex: -1,       // The index of the currently playing video
+        viewingPlaylist: null,      // The playlist currently being viewed (for UI)
+        viewingVideoIndex: -1,       // The index of the video being viewed (for UI)
         playbackMode: 0, // 0=sequential, 1=shuffle, 2=loop
         isPlaying: false,
         isPlaylistView: false,
@@ -565,9 +568,7 @@
         timerInterval: null,
         timerCountdownInterval: null,
         toastTimeout: null,
-        isAutoPlaying: false,
-        pendingPlaylist: null,
-        pendingVideoIndex: -1
+        isAutoPlaying: false
     };
 
     // ============================================================
@@ -682,16 +683,16 @@
         const duration = state.ytPlayer.getDuration();
         if (duration && duration > 0) {
             DOM.playerTimer.textContent = `${formatTime(current)} / ${formatTime(duration)}`;
-            // Save position to history periodically
-            if (state.currentPlaylist && state.currentVideoIndex >= 0 && current > 0) {
-                const videoId = state.currentPlaylist.videoIds[state.currentVideoIndex];
-                updateHistoryPosition(state.currentPlaylist.name, videoId, current);
+            // Save position to history
+            if (state.playingPlaylist && state.playingVideoIndex >= 0 && current > 0) {
+                const videoId = state.playingPlaylist.videoIds[state.playingVideoIndex];
+                updateHistoryPosition(state.playingPlaylist.name, videoId, current);
             }
             if (current >= duration - 0.5 && state.isPlaying && !state.videoEndDetected && !state.autoPlayPending && !state.isStopped) {
                 state.videoEndDetected = true;
                 state.autoPlayPending = true;
                 setTimeout(() => {
-                    if (state.currentPlaylist && !state.isStopped) handleVideoEnd();
+                    if (state.playingPlaylist && !state.isStopped) handleVideoEnd();
                     state.autoPlayPending = false;
                 }, 300);
             }
@@ -699,42 +700,40 @@
     }
 
     // ============================================================
-    // VIDEO END HANDLER - FIXED: Uses current playlist
+    // VIDEO END HANDLER - Uses playingPlaylist
     // ============================================================
     function handleVideoEnd() {
-        // Use the current playlist that's actually playing
-        const playlist = state.currentPlaylist;
+        const playlist = state.playingPlaylist;
         if (!playlist || playlist.videoIds.length === 0) {
-            console.log('Auto-play: No playlist available');
+            console.log('Auto-play: No playing playlist');
             return;
         }
         
-        const currentIdx = state.currentVideoIndex;
+        const currentIdx = state.playingVideoIndex;
         if (currentIdx < 0 || currentIdx >= playlist.videoIds.length) {
             console.log('Auto-play: Invalid video index');
             return;
         }
         
-        console.log(`Auto-play: Current playlist: "${playlist.name}", index: ${currentIdx}`);
+        console.log(`Auto-play: Playing from "${playlist.name}", index: ${currentIdx}`);
         
         let nextIdx;
         if (state.playbackMode === 2) { // Loop
             nextIdx = currentIdx;
-            console.log('Auto-play: Loop mode - replaying same video');
         } else if (state.playbackMode === 1) { // Shuffle
             let idx;
             do {
                 idx = Math.floor(Math.random() * playlist.videoIds.length);
             } while (idx === currentIdx && playlist.videoIds.length > 1);
             nextIdx = idx;
-            console.log(`Auto-play: Shuffle mode - playing index ${nextIdx}`);
         } else { // Sequential
             nextIdx = (currentIdx + 1) % playlist.videoIds.length;
-            console.log(`Auto-play: Sequential mode - playing index ${nextIdx}`);
         }
         
-        // Play the next video from the SAME playlist
         state.isAutoPlaying = true;
+        // Update viewing playlist to match playing playlist so UI stays in sync
+        state.viewingPlaylist = playlist;
+        state.viewingVideoIndex = nextIdx;
         playVideo(playlist, nextIdx);
         setTimeout(() => {
             state.isAutoPlaying = false;
@@ -812,11 +811,11 @@
                         state.isPlaying = false;
                         if (DOM.playBtn) DOM.playBtn.textContent = '▶';
                         if (DOM.radioVisualizer) DOM.radioVisualizer.classList.add('paused');
-                        if (!state.videoEndDetected && state.currentPlaylist && !state.isStopped && !state.autoPlayPending) {
+                        if (!state.videoEndDetected && state.playingPlaylist && !state.isStopped && !state.autoPlayPending) {
                             state.videoEndDetected = true;
                             state.autoPlayPending = true;
                             setTimeout(() => {
-                                if (state.currentPlaylist && !state.isStopped) handleVideoEnd();
+                                if (state.playingPlaylist && !state.isStopped) handleVideoEnd();
                                 state.autoPlayPending = false;
                             }, 300);
                         }
@@ -884,7 +883,9 @@
             DOM.searchInput.placeholder = '🔍 Search videos...';
             DOM.searchInput.value = '';
         }
-        state.currentPlaylist = playlist;
+        // Update viewing playlist only - playing playlist stays unchanged
+        state.viewingPlaylist = playlist;
+        state.viewingVideoIndex = state.playingVideoIndex;
         if (state.navigationStack[state.navigationStack.length - 1] !== 'playlist:' + playlist.name) {
             state.navigationStack.push('playlist:' + playlist.name);
         }
@@ -912,7 +913,7 @@
                 state.isPlaylistView = true;
                 if (DOM.backBtn) DOM.backBtn.classList.add('show');
                 if (DOM.searchInput) DOM.searchInput.placeholder = '🔍 Search videos...';
-                state.currentPlaylist = playlist;
+                state.viewingPlaylist = playlist;
                 renderVideos(playlist);
             } else navigateToGroups();
         } else navigateToGroups();
@@ -975,7 +976,7 @@
         </div>`;
 
         filtered.forEach((pl, idx) => {
-            const isActive = state.currentPlaylist === pl && state.isPlaylistView;
+            const isActive = state.viewingPlaylist === pl && state.isPlaylistView;
             const cacheKey = pl.name;
             const cachedCount = state.metadataCache[cacheKey] ? Object.keys(state.metadataCache[cacheKey]).length : 0;
             const hasMetadata = cachedCount > 0 && cachedCount >= pl.videoIds.length;
@@ -1037,7 +1038,7 @@
         }
 
         videos.forEach((v) => {
-            const isActive = state.currentVideoIndex === v.index;
+            const isActive = state.viewingPlaylist === playlist && state.viewingVideoIndex === v.index;
             const meta = cache[v.id];
             let title = meta ? meta.title : `Video ${v.index + 1}`;
             let translated = false;
@@ -1072,6 +1073,11 @@
         DOM.listContainer.querySelectorAll('.list-item[data-type="video"]').forEach(el => {
             el.addEventListener('click', () => {
                 const idx = parseInt(el.dataset.videoIndex);
+                // When clicking a video, update both playing and viewing
+                state.playingPlaylist = playlist;
+                state.playingVideoIndex = idx;
+                state.viewingPlaylist = playlist;
+                state.viewingVideoIndex = idx;
                 playVideo(playlist, idx);
             });
         });
@@ -1089,7 +1095,7 @@
     }
 
     // ============================================================
-    // CORE PLAYER FUNCTIONS - FIXED: Always uses the passed playlist
+    // CORE PLAYER FUNCTIONS
     // ============================================================
     function playVideo(playlist, videoIndex, restore = false, startPosition = 0) {
         if (!playlist || videoIndex < 0 || videoIndex >= playlist.videoIds.length) {
@@ -1097,19 +1103,17 @@
             return;
         }
         
-        // If auto-playing, ensure we're using the correct playlist
-        if (state.isAutoPlaying && state.currentPlaylist && state.currentPlaylist !== playlist) {
-            console.log(`Auto-play: Switching from "${state.currentPlaylist?.name}" to "${playlist.name}"`);
-        }
+        // Update both playing and viewing states
+        state.playingPlaylist = playlist;
+        state.playingVideoIndex = videoIndex;
+        state.viewingPlaylist = playlist;
+        state.viewingVideoIndex = videoIndex;
         
         state.videoEndDetected = false;
         state.autoPlayPending = false;
         state.isStopped = false;
         if (DOM.blankScreen) DOM.blankScreen.classList.remove('show');
         
-        // Set the current playlist to the one being played
-        state.currentPlaylist = playlist;
-        state.currentVideoIndex = videoIndex;
         const videoId = playlist.videoIds[videoIndex];
         if (!videoId) return;
 
@@ -1129,22 +1133,7 @@
             }
         }
 
-        // Only add to history if not auto-playing or if it's a new manual selection
-        if (!state.isAutoPlaying) {
-            addToHistory(playlist.name, videoId, title, thumb, startPosition);
-        } else {
-            // For auto-play, just update the position in existing history entry
-            const existingEntry = state.history.find(h => h.videoId === videoId && h.playlistName === playlist.name);
-            if (existingEntry) {
-                existingEntry.position = Math.round(startPosition);
-                existingEntry.timestamp = Date.now();
-                saveHistory();
-                renderHistory();
-            } else {
-                addToHistory(playlist.name, videoId, title, thumb, startPosition);
-            }
-        }
-        
+        addToHistory(playlist.name, videoId, title, thumb, startPosition);
         if (DOM.placeholder) DOM.placeholder.style.display = 'none';
 
         if (typeof YT !== 'undefined' && YT.Player) {
@@ -1154,12 +1143,12 @@
         }
 
         if (DOM.playerInfo) DOM.playerInfo.textContent = `${playlist.name} • ${title}`;
-        if (!restore && !state.isAutoPlaying) showToast(`▶ ${title}`);
+        if (!restore) showToast(`▶ ${title}`);
         saveState();
         
-        // Update the view if we're in playlist view
-        if (state.isPlaylistView && state.currentPlaylist) {
-            renderVideos(state.currentPlaylist);
+        // Update the view
+        if (state.isPlaylistView && state.viewingPlaylist) {
+            renderVideos(state.viewingPlaylist);
         }
 
         if (state.currentMode === 'radio') {
@@ -1177,71 +1166,70 @@
     }
 
     function nextVideo() {
-        if (!state.currentPlaylist || state.currentPlaylist.videoIds.length === 0) {
-            showToast('No playlist available', 2000, true);
+        if (!state.playingPlaylist || state.playingPlaylist.videoIds.length === 0) {
+            showToast('No playlist playing', 2000, true);
             return;
         }
         state.videoEndDetected = false;
         state.autoPlayPending = false;
         state.isStopped = false;
         
-        // Use the current playlist
-        const playlist = state.currentPlaylist;
+        const playlist = state.playingPlaylist;
         let idx;
         if (state.playbackMode === 1) { // Shuffle
             do {
                 idx = Math.floor(Math.random() * playlist.videoIds.length);
-            } while (idx === state.currentVideoIndex && playlist.videoIds.length > 1);
+            } while (idx === state.playingVideoIndex && playlist.videoIds.length > 1);
         } else {
-            idx = (state.currentVideoIndex + 1) % playlist.videoIds.length;
+            idx = (state.playingVideoIndex + 1) % playlist.videoIds.length;
         }
         playVideo(playlist, idx);
     }
 
     function prevVideo() {
-        if (!state.currentPlaylist || state.currentPlaylist.videoIds.length === 0) {
-            showToast('No playlist available', 2000, true);
+        if (!state.playingPlaylist || state.playingPlaylist.videoIds.length === 0) {
+            showToast('No playlist playing', 2000, true);
             return;
         }
         state.videoEndDetected = false;
         state.autoPlayPending = false;
         state.isStopped = false;
         
-        const playlist = state.currentPlaylist;
+        const playlist = state.playingPlaylist;
         let idx;
         if (state.playbackMode === 1) { // Shuffle
             do {
                 idx = Math.floor(Math.random() * playlist.videoIds.length);
-            } while (idx === state.currentVideoIndex && playlist.videoIds.length > 1);
+            } while (idx === state.playingVideoIndex && playlist.videoIds.length > 1);
         } else {
-            idx = (state.currentVideoIndex - 1 + playlist.videoIds.length) % playlist.videoIds.length;
+            idx = (state.playingVideoIndex - 1 + playlist.videoIds.length) % playlist.videoIds.length;
         }
         playVideo(playlist, idx);
     }
 
     function randomVideoFromStart() {
-        if (!state.currentPlaylist || state.currentPlaylist.videoIds.length === 0) {
+        if (!state.playingPlaylist || state.playingPlaylist.videoIds.length === 0) {
             showToast('No playlist selected', 2000, true);
             return;
         }
         state.isStopped = false;
         state.videoEndDetected = false;
         state.autoPlayPending = false;
-        const playlist = state.currentPlaylist;
+        const playlist = state.playingPlaylist;
         const idx = Math.floor(Math.random() * playlist.videoIds.length);
         playVideo(playlist, idx);
         showToast('✨ Random video from start');
     }
 
     function randomVideoWithPosition() {
-        if (!state.currentPlaylist || state.currentPlaylist.videoIds.length === 0) {
+        if (!state.playingPlaylist || state.playingPlaylist.videoIds.length === 0) {
             showToast('No playlist selected', 2000, true);
             return;
         }
         state.isStopped = false;
         state.videoEndDetected = false;
         state.autoPlayPending = false;
-        const playlist = state.currentPlaylist;
+        const playlist = state.playingPlaylist;
         const idx = Math.floor(Math.random() * playlist.videoIds.length);
         playVideo(playlist, idx);
         setTimeout(() => {
@@ -1251,7 +1239,6 @@
                     const pos = 0.1 + Math.random() * 0.8;
                     state.ytPlayer.seekTo(duration * pos, true);
                     showToast(`✨ Random video at ${Math.round(pos * 100)}% position`);
-                    // Update position in history
                     const videoId = playlist.videoIds[idx];
                     updateHistoryPosition(playlist.name, videoId, duration * pos);
                 }
@@ -1270,11 +1257,10 @@
                 state.isPlaying = false;
                 if (DOM.playBtn) DOM.playBtn.textContent = '▶';
                 if (DOM.radioVisualizer) DOM.radioVisualizer.classList.add('paused');
-                // Save position on pause
-                if (state.currentPlaylist && state.currentVideoIndex >= 0) {
-                    const videoId = state.currentPlaylist.videoIds[state.currentVideoIndex];
+                if (state.playingPlaylist && state.playingVideoIndex >= 0) {
+                    const videoId = state.playingPlaylist.videoIds[state.playingVideoIndex];
                     const pos = state.ytPlayer.getCurrentTime();
-                    updateHistoryPosition(state.currentPlaylist.name, videoId, pos);
+                    updateHistoryPosition(state.playingPlaylist.name, videoId, pos);
                 }
             } else {
                 state.ytPlayer.playVideo();
@@ -1296,10 +1282,9 @@
             state.ytPlayer.seekTo(newTime, true);
             showToast(`${seconds > 0 ? '⏩' : '⏪'} ${Math.abs(seconds)}s`);
             state.videoEndDetected = false;
-            // Update position in history
-            if (state.currentPlaylist && state.currentVideoIndex >= 0) {
-                const videoId = state.currentPlaylist.videoIds[state.currentVideoIndex];
-                updateHistoryPosition(state.currentPlaylist.name, videoId, newTime);
+            if (state.playingPlaylist && state.playingVideoIndex >= 0) {
+                const videoId = state.playingPlaylist.videoIds[state.playingVideoIndex];
+                updateHistoryPosition(state.playingPlaylist.name, videoId, newTime);
             }
         }
     }
@@ -1366,7 +1351,6 @@
     }
 
     function addToHistory(playlistName, videoId, title, thumbnail, position = 0) {
-        // Remove existing entry
         state.history = state.history.filter(h => !(h.videoId === videoId && h.playlistName === playlistName));
         const entry = { 
             playlistName, 
@@ -1426,7 +1410,10 @@
                     const vidIdx = playlist.videoIds.indexOf(videoId);
                     if (vidIdx >= 0) {
                         closeHistory();
-                        state.currentPlaylist = playlist;
+                        state.playingPlaylist = playlist;
+                        state.playingVideoIndex = vidIdx;
+                        state.viewingPlaylist = playlist;
+                        state.viewingVideoIndex = vidIdx;
                         navigateToPlaylist(playlist);
                         playVideo(playlist, vidIdx, false, position);
                     }
@@ -1472,7 +1459,7 @@
         state.translateEnabled = !state.translateEnabled;
         if (DOM.translateBtn) DOM.translateBtn.classList.toggle('active', state.translateEnabled);
         showToast(state.translateEnabled ? '🌐 Translation ON' : '🌐 Translation OFF');
-        if (!state.isGroupView && state.currentPlaylist) renderVideos(state.currentPlaylist);
+        if (state.isPlaylistView && state.viewingPlaylist) renderVideos(state.viewingPlaylist);
     }
 
     // ============================================================
@@ -1527,7 +1514,7 @@
         if (DOM.statusBadge) DOM.statusBadge.textContent = `✅ ${total} videos`;
         showToast(`Loaded metadata for ${total} videos`);
         localStorage.setItem('shafin_tube_cache', JSON.stringify({ metadataCache: state.metadataCache, timestamp: Date.now() }));
-        if (state.isPlaylistView && state.currentPlaylist === playlist) renderVideos(playlist);
+        if (state.isPlaylistView && state.viewingPlaylist === playlist) renderVideos(playlist);
     }
 
     // ============================================================
@@ -1536,8 +1523,8 @@
     function saveState() {
         try {
             const stateData = {
-                playlistName: state.currentPlaylist?.name || null,
-                videoIndex: state.currentVideoIndex,
+                playlistName: state.playingPlaylist?.name || null,
+                videoIndex: state.playingVideoIndex,
                 playbackMode: state.playbackMode,
                 currentMode: state.currentMode,
                 translateEnabled: state.translateEnabled
@@ -1584,15 +1571,15 @@
                 const container = document.getElementById('yt-player-container');
                 if (container) container.style.display = 'none';
             }
-            if (state.currentPlaylist && state.currentVideoIndex >= 0) {
-                const cacheKey = state.currentPlaylist.name;
+            if (state.playingPlaylist && state.playingVideoIndex >= 0) {
+                const cacheKey = state.playingPlaylist.name;
                 const cache = state.metadataCache[cacheKey] || {};
-                const videoId = state.currentPlaylist.videoIds[state.currentVideoIndex];
+                const videoId = state.playingPlaylist.videoIds[state.playingVideoIndex];
                 const meta = cache[videoId];
-                let title = meta ? meta.title : `Video ${state.currentVideoIndex + 1}`;
+                let title = meta ? meta.title : `Video ${state.playingVideoIndex + 1}`;
                 if (state.translateEnabled && meta && meta.translatedTitle) title = meta.translatedTitle;
                 if (DOM.radioTitle) DOM.radioTitle.textContent = title;
-                if (DOM.radioSub) DOM.radioSub.textContent = `${state.currentPlaylist.name} • Radio Mode`;
+                if (DOM.radioSub) DOM.radioSub.textContent = `${state.playingPlaylist.name} • Radio Mode`;
             }
             if (DOM.blankScreen) DOM.blankScreen.classList.remove('show');
         }
@@ -1637,7 +1624,7 @@
                 clearInterval(state.timerCountdownInterval);
                 state.timerCountdownInterval = null;
                 if (DOM.timerDisplay) DOM.timerDisplay.textContent = '0:00';
-                if (state.currentPlaylist && state.currentPlaylist.videoIds.length > 0 && !state.autoPlayPending) {
+                if (state.playingPlaylist && state.playingPlaylist.videoIds.length > 0 && !state.autoPlayPending) {
                     state.autoPlayPending = true;
                     randomVideoWithPosition();
                     showToast('⏱️ Timer: Random video at random position');
@@ -1700,13 +1687,11 @@
             
             if (rows.length < 2) throw new Error('CSV has no data rows');
             
-            // Reset data
             state.groups = {};
             state.playlists = [];
             state.groupNames = [];
             let validPlaylists = 0;
             
-            // Parse each row (skip header)
             for (let i = 1; i < rows.length; i++) {
                 const fields = parseCSVLine(rows[i]);
                 if (fields.length < 2) continue;
@@ -1821,8 +1806,10 @@
                 }
                 if (!state.groupNames.includes('Custom')) state.groupNames.push('Custom');
             }
-            state.currentPlaylist = tempPlaylist;
-            state.currentVideoIndex = 0;
+            state.playingPlaylist = tempPlaylist;
+            state.playingVideoIndex = 0;
+            state.viewingPlaylist = tempPlaylist;
+            state.viewingVideoIndex = 0;
             navigateToPlaylist(tempPlaylist);
             fetchPlaylistMetadata(tempPlaylist);
             setTimeout(() => playVideo(tempPlaylist, 0), 500);
@@ -1839,8 +1826,10 @@
             }
             if (!state.groupNames.includes('Custom')) state.groupNames.push('Custom');
         }
-        state.currentPlaylist = tempPlaylist;
-        state.currentVideoIndex = 0;
+        state.playingPlaylist = tempPlaylist;
+        state.playingVideoIndex = 0;
+        state.viewingPlaylist = tempPlaylist;
+        state.viewingVideoIndex = 0;
         navigateToPlaylist(tempPlaylist);
         if (DOM.iframe) {
             DOM.iframe.style.display = 'block';
@@ -1871,22 +1860,21 @@
         console.log('📡 Loading from sheet...');
         loadFromSheet();
         
-        // Event listeners
         if (DOM.searchInput) {
             DOM.searchInput.addEventListener('input', () => {
                 if (state.isGroupView) renderGroups();
                 else if (state.currentGroupName && !state.isPlaylistView) renderGroupPlaylists(state.currentGroupName);
-                else if (state.isPlaylistView && state.currentPlaylist) renderVideos(state.currentPlaylist);
+                else if (state.isPlaylistView && state.viewingPlaylist) renderVideos(state.viewingPlaylist);
             });
         }
 
         if (DOM.backBtn) DOM.backBtn.addEventListener('click', goBack);
         if (DOM.refreshBtn) {
             DOM.refreshBtn.addEventListener('click', () => {
-                if (state.currentPlaylist && state.isPlaylistView) {
-                    const cacheKey = state.currentPlaylist.name;
+                if (state.viewingPlaylist && state.isPlaylistView) {
+                    const cacheKey = state.viewingPlaylist.name;
                     if (state.metadataCache[cacheKey]) delete state.metadataCache[cacheKey];
-                    fetchPlaylistMetadata(state.currentPlaylist, true);
+                    fetchPlaylistMetadata(state.viewingPlaylist, true);
                     showToast('Refreshing metadata...');
                 } else {
                     showToast('Open a playlist first to refresh', 1500, true);
@@ -1939,7 +1927,7 @@
         if (DOM.videoIdTile) DOM.videoIdTile.addEventListener('click', copyVideoId);
 
         document.addEventListener('visibilitychange', () => {
-            if (!document.hidden && !state.isPlaying && state.currentPlaylist && !state.autoPlayPending && !state.isStopped) {
+            if (!document.hidden && !state.isPlaying && state.playingPlaylist && !state.autoPlayPending && !state.isStopped) {
                 if (state.ytPlayer && typeof state.ytPlayer.getCurrentTime === 'function') {
                     const current = state.ytPlayer.getCurrentTime();
                     const duration = state.ytPlayer.getDuration();
@@ -1947,7 +1935,7 @@
                         state.videoEndDetected = true;
                         state.autoPlayPending = true;
                         setTimeout(() => {
-                            if (state.currentPlaylist && !state.isStopped) handleVideoEnd();
+                            if (state.playingPlaylist && !state.isStopped) handleVideoEnd();
                             state.autoPlayPending = false;
                         }, 300);
                     }
